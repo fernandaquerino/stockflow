@@ -1,0 +1,165 @@
+// StockFlow data model.
+//
+// Money: integer minor units (cents) in a single currency (USD assumed). No floats, no Decimal.
+// Quantities: integers.
+//
+// Stock invariants (also enforced by CHECK constraints in the migration, see
+// prisma/migrations/*_init/migration.sql and docs/INVARIANTS.md):
+//   0 <= quantityReserved <= quantityOnHand          (available = onHand - reserved >= 0)
+//   quantityOnHand   = SUM(StockMovement.onHandDelta)   per SKU
+//   quantityReserved = SUM(StockMovement.reservedDelta) = SUM(ACTIVE StockReservation.quantity)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum StockMovementType {
+  RECEIPT // stock arrives:                onHand +n
+  ADJUSTMENT // manual correction:         onHand +/-n (reason required)
+  RESERVATION // order reserves stock:     reserved +n
+  RELEASE // order cancelled, stock freed: reserved -n
+}
+
+enum OrderStatus {
+  RESERVED
+  CANCELLED
+}
+
+enum ReservationStatus {
+  ACTIVE
+  RELEASED
+}
+
+model Product {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  category    String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  skus Sku[]
+
+  @@index([active])
+  @@index([category])
+  @@index([name])
+}
+
+model Sku {
+  id          Int      @id @default(autoincrement())
+  code        String   @unique
+  productId   Int
+  variantName String?
+  priceCents  Int
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  product      Product            @relation(fields: [productId], references: [id])
+  inventory    InventoryItem?
+  movements    StockMovement[]
+  orderItems   OrderItem[]
+  reservations StockReservation[]
+
+  @@index([productId])
+}
+
+// Exactly one row per SKU, created together with the SKU.
+model InventoryItem {
+  skuId            Int @id
+  quantityOnHand   Int @default(0)
+  quantityReserved Int @default(0)
+
+  sku Sku @relation(fields: [skuId], references: [id])
+}
+
+// Append-only ledger. Every change to InventoryItem writes exactly one row here.
+model StockMovement {
+  id            Int               @id @default(autoincrement())
+  skuId         Int
+  type          StockMovementType
+  onHandDelta   Int
+  reservedDelta Int
+  onHandAfter   Int
+  reservedAfter Int
+  reason        String?
+  note          String?
+  reference     String?
+  orderId       Int?
+  createdAt     DateTime          @default(now())
+
+  sku   Sku    @relation(fields: [skuId], references: [id])
+  order Order? @relation(fields: [orderId], references: [id])
+
+  @@index([skuId, createdAt])
+  @@index([orderId])
+}
+
+model Customer {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  phone     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orders Order[]
+}
+
+model Order {
+  id           Int         @id @default(autoincrement())
+  customerId   Int
+  status       OrderStatus @default(RESERVED)
+  totalCents   Int
+  notes        String?
+  cancelReason String?
+  cancelledAt  DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  customer  Customer        @relation(fields: [customerId], references: [id])
+  items     OrderItem[]
+  movements StockMovement[]
+
+  @@index([status])
+  @@index([customerId])
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id             Int @id @default(autoincrement())
+  orderId        Int
+  skuId          Int
+  quantity       Int
+  // Price snapshot taken when the order was placed; later SKU price changes do not affect it.
+  unitPriceCents Int
+  lineTotalCents Int
+
+  order       Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  sku         Sku               @relation(fields: [skuId], references: [id])
+  reservation StockReservation?
+
+  @@unique([orderId, skuId])
+  @@index([skuId])
+}
+
+model StockReservation {
+  id          Int               @id @default(autoincrement())
+  orderItemId Int               @unique
+  skuId       Int
+  quantity    Int
+  status      ReservationStatus @default(ACTIVE)
+  createdAt   DateTime          @default(now())
+  releasedAt  DateTime?
+
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  sku       Sku       @relation(fields: [skuId], references: [id])
+
+  @@index([skuId, status])
+}

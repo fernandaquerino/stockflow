@@ -1,0 +1,22 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# secrets / local configuration
+.env
+.env.*
+!.env.example
+
+# generated SQLite databases (dev + test)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+prisma/*.db*
+
+# logs / OS / editor
+*.log
+.DS_Store
+.idea/
+.vscode/
